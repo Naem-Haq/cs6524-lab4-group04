@@ -6,6 +6,7 @@ import cv2 as cv
 import numpy as np
 
 
+# Coarser pyramid levels make larger displacements easier to estimate.
 LK_OPTIONS = {
     "winSize": (27, 27),
     "maxLevel": 3,
@@ -18,6 +19,7 @@ ARROW_SCALE = 3
 
 @dataclass(frozen=True)
 class FrameFlow:
+    # Matching rows in start and end hold one keypoint's (x, y) in each frame.
     start: np.ndarray
     end: np.ndarray
 
@@ -32,6 +34,7 @@ def select_keypoints(previous, current):
     # use up the entire corner budget.
     difference = cv.absdiff(previous, current)
     _, changed = cv.threshold(difference, 12, 255, cv.THRESH_BINARY)
+    # Expand the changed areas to include corners just outside their edges.
     nearby = cv.dilate(changed, MOTION_KERNEL)
     moving = cv.goodFeaturesToTrack(previous, 100, .006, 6, mask=nearby)
     background = cv.goodFeaturesToTrack(previous, 120, .01, 14, mask=cv.bitwise_not(nearby))
@@ -45,6 +48,7 @@ def estimate_flow(previous, current, points, initial_shift=None):
     if points is None or not len(points):
         return FrameFlow(empty, empty)
 
+    # A supplied shift seeds the search at the expected current position.
     guess = points + initial_shift if initial_shift is not None else None
     flags = cv.OPTFLOW_USE_INITIAL_FLOW if guess is not None else 0
     moved, forward_ok, _ = cv.calcOpticalFlowPyrLK(
@@ -64,6 +68,8 @@ def estimate_flow(previous, current, points, initial_shift=None):
     if not valid.any():
         return FrameFlow(empty, empty)
 
+    # Track back to the previous frame to check that each match returns close
+    # to where it started. Wrong matches often fail this round trip.
     points, moved = points[valid], moved[valid]
     guess = points.copy() if flags else None
     returned, backward_ok, _ = cv.calcOpticalFlowPyrLK(
@@ -81,6 +87,7 @@ def bonus_ball(frame, gray):
     hsv = cv.cvtColor(frame, cv.COLOR_BGR2HSV)
     mask = cv.inRange(hsv, (21, 75, 75), (48, 255, 255))
     height = gray.shape[0]
+    # Restrict the search to the band where the ball moves in this clip.
     mask[:round(.28 * height)] = 0
     mask[round(.84 * height):] = 0
     _, labels, stats, centres = cv.connectedComponentsWithStats(mask)
@@ -97,6 +104,7 @@ def bonus_ball(frame, gray):
 def draw_flow(frame, flows, index):
     for flow in flows:
         velocities = flow.velocity
+        # Suppress tiny shifts from stationary points. Scale only the arrows.
         moving = np.linalg.norm(velocities, axis=1) >= .35
         for start, velocity in zip(flow.start[moving], velocities[moving]):
             first = tuple(np.rint(start).astype(int))
@@ -121,6 +129,8 @@ def write_flow_video(source, destination):
             raise OSError(f"Cannot read frames or frame rate from {source}")
 
         height, width = frame.shape[:2]
+        # Cap the processing width and preserve the aspect ratio with even
+        # dimensions for the MP4 encoder.
         process_width = min(WORK_WIDTH, width - width % 2)
         size = process_width, max(2, 2 * round(height * process_width / (2 * width)))
         # Publish the new video only after its writer has closed successfully.
@@ -137,12 +147,15 @@ def write_flow_video(source, destination):
                     resized = cv.resize(frame, size, interpolation=cv.INTER_AREA)
                     current = cv.cvtColor(resized, cv.COLOR_BGR2GRAY)
                     flows = []
+                    # The first frame has no earlier image to compare with.
                     if previous is not None:
                         points = select_keypoints(previous, current)
                         flows.append(estimate_flow(previous, current, points))
                     if source.stem == "04":
                         ball, ball_points = bonus_ball(resized, current)
                         if ball is not None and previous_ball is not None:
+                            # Seed the ball points with the centre's movement
+                            # and reject tracks that stray far from that shift.
                             shift = ball - previous_ball
                             ball_flow = estimate_flow(previous, current, previous_ball_points, shift)
                             consistent = np.linalg.norm(ball_flow.velocity - shift, axis=1) <= 8
