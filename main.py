@@ -1,26 +1,19 @@
+from pathlib import Path
 
-import yaml
+from mypylibs.tracking import SCENES, process_video
 
-from PIL import Image
-from os import path as opath
 
-ROOT_IN = 'in'
-ROOT_OUT = 'out'
-EXT = 'png'
+def main():
+    inputs = Path("in")
+    outputs = Path("out")
+    outputs.mkdir(exist_ok=True)
 
-def main(case: int):
+    for case, scene in SCENES.items():
+        video = inputs / f"{case}.mp4"
+        if case == "04" and not video.exists():
+            continue
+        process_video(video, outputs, scene)
 
-    img = Image.open(opath.join(ROOT_IN, f'{case:02}.{EXT}'))
-    with open(opath.join(ROOT_IN, f'{case:02}.yaml')) as f:
-        params = yaml.safe_load(f)
-    
 
-if __name__ == '__main__':
-
-    case = 0
-    while(True):
-        case += 1
-        try:
-            main(case)
-        except FileNotFoundError:
-            break
+if __name__ == "__main__":
+    main()
