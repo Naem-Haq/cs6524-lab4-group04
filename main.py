@@ -4,8 +4,9 @@ from mypylibs.tracking import SCENES, process_video
 
 
 def main():
-    inputs = Path("in")
-    outputs = Path("out")
+    root = Path(__file__).resolve().parent
+    inputs = root / "in"
+    outputs = root / "out"
     outputs.mkdir(exist_ok=True)
 
     for case, scene in SCENES.items():
