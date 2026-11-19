@@ -12,58 +12,113 @@ Group 04}}
 \maketitle
 
 \begin{abstract}
-We tracked a moving target through occlusion by combining sparse
-Lucas--Kanade optical flow with a foreground silhouette and a Kalman filter.
-The tracker reacquired the target in all three supplied clips and the bonus
-clip. At reacquisition, the distance between the uncorrected prediction and
-the new position measurement ranged from 70.8 to 154.0 source pixels.
-These discrepancies show why a separate prediction-only trajectory is
-useful when assessing the motion model.
+The tracker picked up the target again in all four clips, but its
+prediction was already 70.8 to 154.0 source pixels from the returning
+measurement. The longest gap was four seconds in clip 02. Clip 01
+had a larger discrepancy even though its gap lasted less than a second.
+We used the split trajectories to see where prediction carried the track
+and where the returning measurement had to pull it back.
 \end{abstract}
 
-\section{Method}
+\section{What Happened When the Target Came Back}
 
-\subsection{Target detection and optical flow}
-We processed frames at 640 pixels wide, preserving the original aspect
-ratio. To locate the target, we subtracted a fixed background frame from
-the current colour frame, intersected the resulting change mask with a
-clip-specific HSV range, and excluded the occluder and areas outside the
-expected motion band. After morphological closing and opening, the detector
-ranked connected components by log area and, once tracking began,
-penalised distance from the predicted position. That penalty weakened as
-the gap grew so a displaced target could be reacquired.
+Our run produced an optical-flow video and a trajectory video for each
+clip, with the same frame count as the source. For each return, we
+measured the distance from the Kalman prediction to the first centre
+reported by the detector, before applying the correction.
+Table~\ref{tab:results} gives that distance in source pixels and
+as a percentage of frame width. The percentage matters because the
+bonus clip is 1920 pixels wide, while the other three are 1280.
 
-The tracked point was the foreground centroid. In clip 02, we used the
-centre of the pen's blue cap, which gave the detector a distinct colour
-region to follow. When a component was clipped at an occluder or image
-edge, the detector could estimate its horizontal centre from the visible
-edge and a preset half-width.
+\begin{table}[!h]
+\caption{Prediction discrepancy at the first return}
+\label{tab:results}
+\centering
+\begin{tabular}{lrrrr}
+\hline
+Clip & Return frame & Gap (frames) & Source px & Width (\%) \\
+\hline
+01 & 59  & 23  & 130.9 & 10.2 \\
+02 & 131 & 100 & 91.6  & 7.2 \\
+03 & 85  & 15  & 70.8  & 5.5 \\
+04 (bonus) & 33 & 9 & 154.0 & 8.0 \\
+\hline
+\end{tabular}\\[2pt]
+{\footnotesize Frame numbering starts at zero.}
+\end{table}
 
-On grayscale frames, we selected up to 65 corners inside the target mask
-with \texttt{goodFeaturesToTrack}, using a quality threshold of 0.004, a
-minimum spacing of 3 pixels, and a block size of 3. We used OpenCV's
-pyramidal Lucas--Kanade implementation \cite{lucas1981} with a
-$27\times27$ window, \texttt{maxLevel} of 3, and termination after 30
-iterations or an increment below 0.01. Coarser pyramid levels help
-accommodate larger displacements. When both silhouettes existed, their
-centroid displacement supplied the starting guess. We rejected failed
-matches and matches with a forward--backward discrepancy of at least
-1.5 processing pixels.
+The differences between clips make it hard to explain the misses by gap
+length alone. Clip 02 went 100 frames without a measurement and came back
+7.2\% of a frame width away from the prediction. Clip 01 missed by 10.2\%
+after 23 frames. The bonus clip had the biggest difference in raw pixels
+after only nine frames. Its filter assumed a smooth arc, so a change in
+motion, such as a bounce, could move the ball away from that prediction
+over a short gap. The four runs also used different scene settings, so
+we cannot isolate the effect of the gap length from these results.
 
-Each accepted match gave a position and an interframe displacement in
-processing pixels per frame. Target matches had to end within the dilated
-current mask and agree with the median displacement to within 4 pixels.
-With two or more consistent matches, we added their median displacement
-to the previous position measurement and blended the result with the
-current silhouette centre, with weights of 0.55 and 0.45. This retained
-the motion estimated by LK while limiting drift. With insufficient
-matches, the silhouette centre supplied the position on its own, including
-on the first frame after a full occlusion.
+\subsection{A closer look at clip 01}
+At frame 48, the target is hidden and the orange prediction is the only
+current position estimate in Fig.~\ref{fig:tracks}. The detector picked
+up the target again at frame 59. By frame 66, the target is partly visible
+on the left, but the green corrected centre is still drawn over the
+occluder. The magenta path has continued farther up and left. The live
+track has moved away from that path, yet there is still a visible lag
+after the target returns.
 
-\subsection{Motion model and measurement update}
-The Kalman filter \cite{kalman1960} maintained position and velocity in
-the state vector $\mathbf{x}=[p_x,p_y,v_x,v_y]^\top$. The following
-matrices use a one-frame time step.
+We created the magenta path by saving the predicted state before
+correcting it on the first frame back. We let that copy keep predicting
+while the live track used the incoming measurements. This makes the
+effect of the correction visible. The orange and magenta paths show
+where the model expected the target to go. There is no labelled centre
+behind the occluder to check either path against.
+
+\begin{figure}[!t]
+\centering
+\includegraphics[width=\columnwidth]{clip01-trajectories.png}
+\caption{Clip 01 at frame 48 during occlusion (top) and frame 66 after
+reacquisition (bottom). Cyan is the measured centre, orange is the
+prediction, green is the corrected centre, and magenta continues the
+prediction as if the target had stayed hidden. Velocity arrows are drawn
+every five frames.}
+\label{fig:tracks}
+\end{figure}
+
+\clearpage
+\section{Why the Tracker Behaved This Way}
+
+\subsection{The first measurement back comes from the silhouette}
+Lucas--Kanade (LK) flow \cite{lucas1981} gives us the motion of
+individual corners between two frames. On the first frame back, there
+is no corresponding set of target corners from the hidden frame.
+The filter therefore gets its first returning position from the
+foreground detector. We used the centroid of the visible target,
+or the blue cap in clip 02, as the point to track. The mask combined
+background subtraction, a clip-specific HSV range, and the known
+occluder boundaries. At a clipped edge we estimated the horizontal
+centre from the visible edge and an assumed half-width. That estimate
+can be biased by a partial silhouette, so the distances in
+Table~\ref{tab:results} combine model error with measurement error.
+
+While the target was visible, we selected up to 65 corners inside the
+mask on 640-pixel-wide frames, with a quality threshold of 0.004
+and a minimum spacing of 3 pixels. We ran pyramidal LK with a
+$27\times27$ window, a maximum pyramid level of 3, and a limit of 30
+iterations or a change below 0.01. We used the change in silhouette
+centre as the initial shift when both frames had a detection. We kept
+matches that returned within 1.5 pixels on a backward pass and landed
+inside the dilated target mask. At least two displacements had to
+agree with the median to within 4 processing pixels. We then advanced
+the previous measurement by the median displacement and blended it
+with the new silhouette centre, weighting them 55\% and 45\%.
+The silhouette limits drift from adding flow frame after frame. It
+also lets a single returning detection restart corrections.
+
+\subsection{The filter can correct only when it has a measurement}
+The Kalman filter \cite{kalman1960} used a one-frame time step.
+In the state $\mathbf{x}=[p_x,p_y,v_x,v_y]^\top$, the transition $F$
+keeps velocity constant and adds it to position.
+$G$ maps acceleration into position and velocity, and $H$ selects
+the two position coordinates.
 \[
  F = \begin{bmatrix} I_2 & I_2 \\ 0 & I_2 \end{bmatrix},
  \qquad
@@ -71,100 +126,38 @@ matrices use a one-frame time step.
  \qquad
  H = \begin{bmatrix} I_2 & 0 \end{bmatrix}.
 \]
-Velocity was needed to extrapolate through the gap. The filter inferred
-it from successive position updates. A direct LK velocity observation
-would be unavailable on the first returning frame and would share the
-same flow samples as the position estimate. The supplied clips used a
-constant-velocity model with zero control input. For the bonus ball, a
-downward control acceleration of 5 processing pixels per frame squared
-approximated gravity in the image plane.
-
-We initialised the state at the first measurement with zero velocity and
-$P_0=\mathrm{diag}(16,16,100,100)$, giving the initial velocity greater
-uncertainty. We used $Q=\sigma_a^2 GG^\top$ with $\sigma_a$ of
-0.7, 0.2, 0.8, and 12 processing pixels per frame squared for clips
-01 through 04. The larger value for the bonus clip lets the estimated
-motion adapt more readily when measurements resume. We used
-$R=\sigma_p^2 I_2$, where $\sigma_p$ was 3 processing pixels for the
-supplied clips and 1.5 for the bonus clip when LK supported the
-measurement. We doubled $\sigma_p$ for silhouette-only measurements,
-which quadrupled the covariance and reduced the weight given to a centre
-that could shift as the object emerged from behind the mask.
-
-\subsection{Occlusion and trajectory visualisation}
-The filter predicted each frame after initialisation. With no detected
-centre, it skipped correction and advanced using the motion model.
-After at least three missing frames, it saved the prediction from the
-returning frame before applying the new measurement. The saved state
-then continued forward independently with no corrections, while the live
-track resumed correction. The optical-flow videos show scene and target
-vectors, with scene corners refreshed every eight frames or when fewer than
-40 survive. The trajectory videos use cyan for measurements, orange for
-predictions, green for corrected states, and magenta for the trajectory
-without reappearance. Velocity arrows appear every five frames.
-
-\section{Results and Discussion}
-
-Running \texttt{python main.py} on the four input clips generated one
-optical-flow video and one trajectory video per input. Each output kept
-the frame count of its input. Table~\ref{tab:results} gives the
-reacquisition frame, the length of the preceding prediction-only gap,
-and the Euclidean distance between the predicted centre and the first
-returning measurement, converted from processing to source pixels.
-The returning measurement comes from the detector, so the gap-end
-error also reflects any error in its centre estimate. The videos lack
-annotated ground truth for the hidden frames.
-
-\begin{table}[htbp]
-\caption{First reacquisition in each clip}
-\label{tab:results}
-\centering
-\begin{tabular}{lrrr}
-\hline
-Clip & Return frame & Gap (frames) & Error (source px) \\
-\hline
-01 & 59  & 23  & 130.9 \\
-02 & 131 & 100 & 91.6 \\
-03 & 85  & 15  & 70.8 \\
-04 (bonus) & 33 & 9 & 154.0 \\
-\hline
-\end{tabular}\\[2pt]
-{\footnotesize Frame numbering starts at zero.}
-\end{table}
-
-Figure~\ref{fig:tracks} shows the divergence between the corrected and
-prediction-only paths in clip 01. By frame 66 the target is partly visible
-to the left of the occluder, while the corrected centre is still drawn
-over the occluder. The longest gap was 100 frames in clip 02. The
-bonus clip had the largest discrepancy in source pixels after only nine
-missing frames. The bonus frames were 1920 pixels wide versus 1280 for
-the supplied clips. As a fraction of frame width, clip 01 had the
-largest discrepancy (10.2\%, compared with 8.0\% for clip 04).
-The bonus model assumes smooth acceleration, so
-a bounce or a velocity error at the start of the gap can displace the
-prediction quickly. Increasing process noise gives the filter more
-latitude to correct when a measurement returns. During the gap, the
-predicted centre still follows the same transition and gravity input.
-
-The fixed background, colour ranges, and occluder boundaries make this
-pipeline specific to the recorded scenes. A partial silhouette can
-also bias the reacquisition measurement even with the half-width
-adjustment. To distinguish detector error from prediction error, a
-follow-up could label centres just before and after occlusion and
-repeat the evaluation on visible intervals with measurements withheld.
-For the bonus clip, comparing a bounce-aware model with the existing
-gravity model on the same intervals would test whether a change in the
-motion model actually improves prediction.
+The filter estimates velocity from position updates. Using LK velocity
+as a second observation would reuse the same corner displacements that
+went into the position measurement. The supplied clips use zero control
+input. The bonus clip adds a downward acceleration of 5 processing
+pixels per frame squared.
 
 \newpage
-\begin{figure}[!t]
-\centering
-\includegraphics[width=\columnwidth]{clip01-trajectories.png}
-\caption{Clip 01 during occlusion (frame 48, top) and after reacquisition
-(frame 66, bottom). The orange prediction bridges the gap. The magenta
-trajectory continues independently once the live track resumes correction.}
-\label{fig:tracks}
-\end{figure}
+We started at the first measured centre with zero velocity and
+$P_0=\mathrm{diag}(16,16,100,100)$ to give velocity more room to
+change at the start. We set $Q=\sigma_a^2 GG^\top$, where $\sigma_a$
+was 0.7, 0.2, 0.8, and 12 for clips 01--04. The larger value on the
+bonus clip increases the uncertainty as the prediction runs and
+allows a stronger correction when the ball returns. It cannot change
+the predicted path during the gap by itself. For
+$R=\sigma_p^2 I_2$, we used a position standard deviation of 3
+processing pixels with flow support (1.5 for the bonus clip) and
+doubled it for silhouette-only updates. This gives the first centre
+back less influence when the target is only partly visible. Clip 01
+shows the trade-off. A conservative correction can avoid following a
+poor detection, but it can also take several frames to catch up.
+
+\section{What We Would Test Next}
+
+The first test would be to label the centre around reappearance and
+compare the detector and filter against the same labels. We would
+also hide measurements over a visible stretch so that we could score
+the prediction at every frame of a gap. On the bonus clip we could
+then compare the current gravity model with a model that allows a
+bounce, using the same gaps and labels. That would show whether a
+change in the motion model improves the hidden trajectory, or
+whether most of the discrepancy comes from where the detector placed
+the centre on return.
 
 \begin{thebibliography}{2}
 \bibitem{lucas1981}
